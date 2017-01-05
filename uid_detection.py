@@ -1,7 +1,8 @@
 import fileinput
 import json
 import math
-from urllib.parse import urlparse, parse_qs
+import itertools
+from urllib.parse import urlparse, parse_qs, unquote
 from collections import defaultdict
 from operator import itemgetter
 
@@ -42,13 +43,24 @@ def entropy(val):
 def find_third_parties(req):
     for header in req['req_headers']:
         if header[0] == 'Referer':
-            return header[1]
-    return None
+            yield header[1]
+            for url in find_embedded_urls(header[1]):
+                yield url
 
+
+def find_embedded_urls(url):
+    url_parts = urlparse(url)
+    for part in [url_parts.query, url_parts.params]:
+        for _, v in iter_multi_dict(parse_qs(part).items()):
+            v = unquote(v)
+            for search in ['http://', 'https://', 'www.']:
+                ind = v.find(search)
+                if ind > -1:
+                    yield v[ind:]
 
 def reduce_request_group(requestList, requestIndices):
     requests = [requestList[i] for i in requestIndices]
-    uniques_seen = set(map(find_third_parties, requests))
+    uniques_seen = set(itertools.chain.from_iterable(map(find_third_parties, requests)))
     return {
         'uniques_seen': uniques_seen,
         'unique_domains': set(map(lambda url: urlparse(url).netloc, filter(lambda s: s is not None, uniques_seen)))
@@ -70,9 +82,11 @@ def iterate_uids(req):
                     c_value = cookie
                 yield host, 'cookie', c_name, c_value
 
-    qs_kv = parse_qs(urlparse(req['url']).query, keep_blank_values=True)
-    for qs in iter_multi_dict(qs_kv.items()):
-        yield host, 'qs', qs[0], qs[1]
+    url_parts = urlparse(req['url'])
+    for part, kv in [('qs', url_parts.query), ('ps', url_parts.params)]:
+        qs_kv = parse_qs(kv, keep_blank_values=True)
+        for qs in iter_multi_dict(qs_kv.items()):
+            yield host, part, qs[0], qs[1]
 
 
 ENTROPY_THRESHOLD = 1.0
