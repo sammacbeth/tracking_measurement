@@ -2,6 +2,7 @@ import fileinput
 import json
 import math
 import itertools
+import tldextract
 from urllib.parse import urlparse, parse_qs, unquote
 from collections import defaultdict
 from operator import itemgetter
@@ -67,10 +68,9 @@ def reduce_request_group(requestList, requestIndices):
     }
 
 def iterate_uids(req):
-    host = req['host']
 
     for cookie in iter_multi_dict(req['req_cookies']):
-        yield host, 'cookie', cookie[0], cookie[1]
+        yield 'cookie', cookie[0], cookie[1]
 
     for k, v in iter_multi_dict(req['res_headers']):
         if k == 'Set-Cookie':
@@ -80,13 +80,13 @@ def iterate_uids(req):
                 else:
                     c_name = ''
                     c_value = cookie
-                yield host, 'cookie', c_name, c_value
+                yield 'cookie', c_name, c_value
 
     url_parts = urlparse(req['url'])
     for part, kv in [('qs', url_parts.query), ('ps', url_parts.params)]:
         qs_kv = parse_qs(kv, keep_blank_values=True)
         for qs in iter_multi_dict(qs_kv.items()):
-            yield host, part, qs[0], qs[1]
+            yield part, qs[0], qs[1]
 
 
 ENTROPY_THRESHOLD = 1.0
@@ -102,6 +102,7 @@ def load_requests(*files):
                 try:
                     req = json.loads(line)
                     req['index'] = index
+                    req['tld'] = tldextract.extract(req['host']).registered_domain
                     requests.append(req)
                     index += 1
                 except:
@@ -112,24 +113,55 @@ def load_requests(*files):
 
 
 def group_by_uid(requests):
-    linked_requests = defaultdict(dict)
+    linked_requests = defaultdict(lambda: defaultdict(dict))
 
     for req in requests:
+        host = req['tld']
+        tracker = linked_requests[host]
+
         for uid in iterate_uids(req):
-            if not uid in linked_requests:
+            if not uid in tracker:
                 # skip short values
-                if len(uid[3]) <= 4:
+                if len(uid[2]) <= 4:
                     continue
-                ent = entropy(uid[3])
+                ent = entropy(uid[2])
                 if not max(ent.values()) > ENTROPY_THRESHOLD:
                     continue
                 ent['reqs'] = set()
-                linked_requests[uid] = ent
+                tracker[uid] = ent
 
-            linked = linked_requests[uid]
+            linked = tracker[uid]
             linked['reqs'].add(req['index'])
 
     return linked_requests
+
+
+def gather_cooccuring_uids(uid_meta_pair, other_uid_pairs, skip=set()):
+    uid, meta = uid_meta_pair
+    requests_seen = meta['reqs']
+    combined_uid = [uid]
+    skip.add(uid)
+    for other_uid, other_meta in other_uid_pairs:
+        if other_uid in skip:
+            continue
+            
+        other_requests_seen = other_meta['reqs']
+        if requests_seen.issubset(other_requests_seen):
+            combined_uid += gather_cooccuring_uids((other_uid, other_meta), other_uid_pairs, 
+                                                   skip=set(combined_uid) | skip)
+            skip.update(combined_uid)
+    return combined_uid
+    
+
+def reduced_uids(linked_domain):
+    linked_reduced = dict()
+    uid_pairs = list(linked_domain.items())
+    for pair in uid_pairs:
+        uid = gather_cooccuring_uids(pair, uid_pairs)
+        ent = entropy(''.join([u[2] for u in uid]))
+        ent['reqs'] = linked_domain[uid[0]]['reqs']
+        linked_reduced[tuple(set(uid))] = ent
+    return linked_reduced
 
 
 # linked_sorted = sorted(tracked_reduces.items(), key=lambda i: len(i[1]['unique_domains']), reverse=True)
