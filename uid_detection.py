@@ -46,7 +46,10 @@ def find_third_parties(req):
         if header[0] == 'Referer':
             yield ('referer', header[1])
             for url in find_embedded_urls(header[1]):
-                yield url
+                yield 'referer_url', url
+
+    for url in find_embedded_urls(req['url']):
+        yield 'url', url
 
 
 def find_embedded_urls(url):
@@ -57,7 +60,7 @@ def find_embedded_urls(url):
             for search in ['http://', 'https://', 'www.']:
                 ind = v.find(search)
                 if ind > -1:
-                    yield ('referer_url', v[ind:])
+                    yield v[ind:]
 
 def reduce_request_group(requestList, requestIndices):
     requests = [requestList[i] for i in requestIndices]
