@@ -76,7 +76,7 @@ def calculate_uid_reach(requests, linked_uids):
             yield req, (domain, uid)
 
     # make request id the key
-    uid_requests = linked.flatMap(expand_requests)
+    uid_requests = linked_uids.flatMap(expand_requests)
     # extract id and seen urls for each request
     reqs_urls_seen = requests.map(lambda req: (req['rid'], req['found_urls']))\
         .filter(lambda pair: len(pair[1]) > 0)
@@ -87,9 +87,8 @@ def calculate_uid_reach(requests, linked_uids):
         .mapValues(urls_seen_info)
     return uid_reach
 
-if __name__ == '__main__':
-    sc = SparkContext()
 
+def run_analysis(sc):
     # load request logs, decode and and an index
     requests = sc.textFile('./logs/').flatMap(safe_json_decode).zipWithIndex().map(prepare_request_dict).cache()
 
@@ -97,6 +96,16 @@ if __name__ == '__main__':
     linked = link_requests_by_uid(requests).cache()
 
     uid_reach = calculate_uid_reach(requests, linked)
-    uid_reach.sortBy(lambda row: len(row[1]['unique_domains']), ascending=False).coalesce(50).saveAsTextFile('./uid_reach')
-    requests.saveAsTextFile('./requests')
+    uid_reach.sortBy(lambda row: len(row[1]['unique_domains']), ascending=False)\
+        .coalesce(50).saveAsTextFile('./data/uid_reach')
 
+    def sanitise_request_obj(req):
+        req['found_urls'] = list(req['found_urls'])
+        return req
+
+    requests.map(sanitise_request_obj).map(json.dumps).saveAsTextFile('./data/requests')
+
+
+if __name__ == '__main__':
+    sc = SparkContext()
+    run_analysis(sc)

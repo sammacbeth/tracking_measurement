@@ -80,7 +80,7 @@ def iterate_uids(req):
                 else:
                     c_name = ''
                     c_value = cookie
-                yield 'cookie', c_name, c_value
+                yield 'set-cookie', c_name, c_value
 
     url_parts = urlparse(req['url'])
     for part, kv in [('qs', url_parts.query), ('ps', url_parts.params)]:
