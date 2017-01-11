@@ -18,10 +18,12 @@ def response(flow):
     req_data['scheme'] = flow.request.scheme
     req_data['url'] = flow.request.url
     req_data['urlencoded_form'] = flow.request.urlencoded_form.collect()
+    req_data['ts'] = flow.request.timestamp_start
 
     #req_data['res_cookies'] = flow.response.cookies.collect()
     req_data['res_headers'] = flow.response.headers.collect()
     req_data['res_status'] = flow.response.status_code
+
     print(json.dumps(req_data))
 
 @concurrent

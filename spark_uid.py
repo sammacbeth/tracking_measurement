@@ -3,6 +3,7 @@ from uid_detection import *
 from pyspark import SparkContext
 from operator import itemgetter
 from urllib.parse import urlparse
+import datetime
 
 """Parse json, ignoring lines with errors"""
 def safe_json_decode(s):
@@ -20,6 +21,9 @@ def prepare_request_dict(req_with_index):
     req['rid'] = rid
     req['tld'] = tldextract.extract(req['host']).registered_domain
     req['found_urls'] = set(find_third_parties(req))
+    # for requests without ts, make up something feasible
+    if not 'ts' in req:
+        req['ts'] = (datetime.datetime(year=2016, month=1, day=1) + datetime.timedelta(seconds=rid)).timestamp()
     return req
 
 
@@ -75,16 +79,29 @@ def calculate_uid_reach(requests, linked_uids):
         for req in requests:
             yield req, (domain, uid)
 
+    def combine_req_data(acc, req):
+        acc['urls'].update(req['urls'])
+        acc['from_ts'] = min(acc['from_ts'], req['from_ts'])
+        acc['to_ts'] = max(acc['to_ts'], req['to_ts'])
+        return acc
+
+    def uid_output(agg_reqs):
+        out = urls_seen_info(agg_reqs['urls'])
+        out['from_ts'] = agg_reqs['from_ts']
+        out['to_ts'] = agg_reqs['to_ts']
+        return out
+
     # make request id the key
     uid_requests = linked_uids.flatMap(expand_requests)
     # extract id and seen urls for each request
-    reqs_urls_seen = requests.map(lambda req: (req['rid'], req['found_urls']))\
-        .filter(lambda pair: len(pair[1]) > 0)
+    reqs_urls_seen = requests.map(lambda req: (req['rid'], {'urls': req['found_urls'], 'from_ts': req['ts'], 'to_ts': req['ts']}))\
+        .filter(lambda pair: len(pair[1]['urls']) > 0)
     # join rdds on request id, then swap (domain, uid) to key and combined found urls
     uid_reach = uid_requests.join(reqs_urls_seen)\
         .map(lambda tup: (tup[1][0], tup[1][1]))\
-        .reduceByKey(lambda a, b: a.union(b))\
-        .mapValues(urls_seen_info)
+        .foldByKey({'urls': set(), 'from_ts': datetime.datetime.now().timestamp(), 'to_ts': 0}, 
+            combine_req_data)\
+        .mapValues(uid_output)
     return uid_reach
 
 
