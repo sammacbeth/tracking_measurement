@@ -184,31 +184,3 @@ def rm_reqs(d):
 def annotate_reach(requests, linked_requests):
     return {k: rm_reqs(merge(v, reduce_request_group(requests, v['reqs']))) for k, v in linked_requests.items()}
 
-
-from multiprocessing import Pool
-
-
-def analyse_requests(requests):
-    linked = group_by_uid(requests)
-    # with Pool() as p:
-    #     req_uids = p.imap(list_uids, requests, chunksize=5000)
-    #     linked = defaultdict(lambda: defaultdict(lambda: {'reqs': set()}))
-    #     for req_ind, domain_uids in enumerate(req_uids):
-    #         host, uids = domain_uids
-    #         for uid in uids:
-    #             linked[host][uid]['reqs'].add(req_ind)
-    linked_reduced = {domain: reduced_uids(uids) for domain, uids in linked.items()}
-        # linked_reduced_list = p.starmap(reduced_uids, linked.items())
-        # linked_reduced = dict(linked_reduced_list)
-    # linked_reduced_annotated = {domain: annotate_reach(requests, uids) for domain, uids in linked_reduced.items()}
-    # annotated = [(domain, uid) for domain, uids in linked_reduced_annotated.items() for uid in uids.items()]
-    # return sorted(annotated, key=lambda i: len(i[1][1]['unique_domains']), reverse=True)
-    return []
-
-
-if __name__ == '__main__':
-    import os
-    requests = load_requests(*['./logs/{}'.format(f) for f in os.listdir('./logs/')])
-    grouped = analyse_requests(requests)
-    for row in grouped:
-        print(row)
