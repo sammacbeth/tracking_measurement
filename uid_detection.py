@@ -9,9 +9,11 @@ from operator import itemgetter
 
 def iter_multi_dict(d):
     for item in d:
-        if not isinstance(item[1], str):
+        if item[1] is None:
+            continue
+        elif not isinstance(item[1], str):
             for i2 in item[1]:
-                yield item[0], i2
+                yield item[0], i2            
         else:
             yield item[0], item[1]
 
@@ -59,8 +61,9 @@ def find_embedded_urls(url):
             v = unquote(v)
             for search in ['http://', 'https://', 'www.']:
                 ind = v.find(search)
+                prefix = 'http://' if search == 'www.' else ''
                 if ind > -1:
-                    yield v[ind:]
+                    yield prefix + v[ind:]
 
 def reduce_request_group(requestList, requestIndices):
     requests = [requestList[i] for i in requestIndices]

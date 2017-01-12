@@ -105,22 +105,22 @@ def calculate_uid_reach(requests, linked_uids):
     return uid_reach
 
 
-def run_analysis(sc):
+def run_analysis(sc, input_dir='./logs/', output_dir='./data'):
     # load request logs, decode and and an index
-    requests = sc.textFile('./logs/').flatMap(safe_json_decode).zipWithIndex().map(prepare_request_dict).cache()
+    requests = sc.textFile(input_dir).flatMap(safe_json_decode).zipWithIndex().map(prepare_request_dict).cache()
 
     # find uids and the requests they saw
     linked = link_requests_by_uid(requests).cache()
 
     uid_reach = calculate_uid_reach(requests, linked)
     uid_reach.sortBy(lambda row: len(row[1]['unique_domains']), ascending=False)\
-        .coalesce(50).saveAsTextFile('./data/uid_reach')
+        .coalesce(50).saveAsTextFile('{}/uid_reach'.format(output_dir))
 
     def sanitise_request_obj(req):
         req['found_urls'] = list(req['found_urls'])
         return req
 
-    requests.map(sanitise_request_obj).map(json.dumps).saveAsTextFile('./data/requests')
+    requests.map(sanitise_request_obj).map(json.dumps).saveAsTextFile('{}/requests'.format(output_dir))
 
 
 if __name__ == '__main__':
