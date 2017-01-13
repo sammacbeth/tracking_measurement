@@ -1,5 +1,5 @@
 import fileinput
-import json
+import ujson as json
 import math
 import itertools
 import tldextract
@@ -53,17 +53,32 @@ def find_third_parties(req):
     for url in find_embedded_urls(req['url']):
         yield 'url', url
 
+    # find urls in post data
+    post_data_sources = [('form', iter_multi_dict(req['urlencoded_form']))]
+    if 'data' in req:
+        post_data_sources.append(('post-json', iterate_json_post_data(req['data'])))
+        post_data_sources.append(('form', iterate_form_post_data(req['data'])))
+
+    for source, gen in post_data_sources:
+        for k, v in gen:
+            for url in find_url_in_string(v):
+                yield source, url
+
+
+def find_url_in_string(s):
+    for search in ['http://', 'https://', 'www.']:
+        ind = s.find(search)
+        prefix = 'http://' if search == 'www.' else ''
+        if ind > -1:
+            yield prefix + s[ind:]
 
 def find_embedded_urls(url):
     url_parts = urlparse(url)
     for part in [url_parts.query, url_parts.params]:
         for _, v in iter_multi_dict(parse_qs(part).items()):
             v = unquote(v)
-            for search in ['http://', 'https://', 'www.']:
-                ind = v.find(search)
-                prefix = 'http://' if search == 'www.' else ''
-                if ind > -1:
-                    yield prefix + v[ind:]
+            for url in find_url_in_string(v):
+                yield url
 
 def reduce_request_group(requestList, requestIndices):
     requests = [requestList[i] for i in requestIndices]
@@ -72,6 +87,47 @@ def reduce_request_group(requestList, requestIndices):
         'uniques_seen': uniques_seen,
         'unique_domains': set(map(lambda url: urlparse(url).netloc, filter(lambda s: s is not None, uniques_seen)))
     }
+
+
+def _flatten_dict(d, sep='_', prefix=None):
+    if isinstance(d, list):
+        d = {str(i): v for i, v in enumerate(d)}
+    if not hasattr(d, 'items'):
+        yield prefix or '', str(d)
+        return
+
+    for k, v in d.items():
+        sub_prefix = prefix + sep + k if prefix else k
+        if hasattr(v, 'items') or isinstance(v, list):
+            for kv in _flatten_dict(v, sep=sep, prefix=sub_prefix):
+                yield kv
+        else:
+            yield sub_prefix, str(v)
+    return
+
+def iterate_json_post_data(data):
+    if data[0] == '{' or data[0] == '[':
+        try:
+            # json data
+            json_data = json.loads(data)
+            return iter(_flatten_dict(json_data, sep='.'))
+        except:
+            pass
+
+    return iter([])
+
+
+def iterate_form_post_data(data):
+    for pair in data.split('&'):
+        try:    
+            k, v = map(unquote, pair.split('=', 1))
+            yield k, v
+        except:
+            continue
+    return
+
+# values longer than this from post data are probably real uploaded data and should be ignored
+LONG_UID_CUTOFF = 500
 
 def iterate_uids(req):
 
@@ -94,8 +150,24 @@ def iterate_uids(req):
         for qs in iter_multi_dict(qs_kv.items()):
             yield part, qs[0], qs[1]
 
+    # post data
+    if req['method'] == 'POST':
+        value_length_filter = lambda e: len(e[1]) < LONG_UID_CUTOFF
+        # form entries should be deduped because we have to ways to extract
+        form_kv = set(filter(value_length_filter, iter_multi_dict(req['urlencoded_form'])))
+        if 'text' in req:
+            form_kv.update(filter(value_length_filter, iterate_form_post_data(req['text'])))
+        for k, v in form_kv:
+                yield 'form', k, v
+
+        if 'text' in req:
+            for k, v in iterate_json_post_data(req['text']):
+                if len(v) < LONG_UID_CUTOFF:
+                    yield 'post-json', k, v
+
+
 def list_uids(req):
-    return req['tld'], list(iterate_uids(req))
+    return req['tld'], list(set(iterate_uids(req)))
 
 
 ENTROPY_THRESHOLD = 1.0

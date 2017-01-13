@@ -1,4 +1,4 @@
-import json
+import ujson as json
 from uid_detection import *
 from pyspark import SparkContext
 from operator import itemgetter
@@ -6,6 +6,9 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from pyspark.sql import Row
 from whitelist import is_safe_key, is_safe_token, is_manual_safe
+from collections import defaultdict
+import itertools
+from functools import reduce
 
 """Parse json, ignoring lines with errors"""
 def safe_json_decode(s):
@@ -41,11 +44,15 @@ def groupByDomain(uid_row):
     return domain, (uid, requests)
 
 
+max_len = 0
+
 """Compress uids with ones which occur on the same requests"""
 def compress_uids(row):
+    global max_len
     domain, uids = row
+    n_uids = len(uids)
     uids = sorted(uids, key=lambda pair: len(pair[1]))
-    
+
     for uid, reqs in uids:
         combined_key = [uid]
         for other_uid, other_reqs in uids:
@@ -53,13 +60,45 @@ def compress_uids(row):
                 continue
             if reqs.issubset(other_reqs):
                 combined_key.append(other_uid)
-                
-        yield (domain, tuple(sorted(set(combined_key))), reqs)
+
+        yield domain, frozenset(combined_key), frozenset(reqs)
+
+
+def compress_uids2(row):
+    domain, uids = row
+    # read dict of req: set(uid)
+    # for each uid: intersection of each uid at reqs
+    req_mat = defaultdict(set)
+    indexed_uids = dict()
+
+    for i, (uid, reqs) in enumerate(uids):
+        indexed_uids[i] = uid
+        for req in reqs:
+            req_mat[req].add(i)
+
+    keys = set()
+
+    for uid, reqs in uids:
+        #combined_key = reduce(lambda a, b: a.intersection(b), [req_mat[req] for req in reqs])
+        uids_for_reqs = [req_mat[req] for req in reqs]
+        combined_key = uids_for_reqs[0].intersection(*uids_for_reqs[1:])
+        keys.add((frozenset(combined_key), frozenset(reqs)))
+
+    for uid_ids, reqs in keys:
+        key = frozenset([indexed_uids[i] for i in uid_ids])
+        yield domain, key, reqs
+
+def url_parse_or_none(url):
+    try:
+        return urlparse(url).netloc
+    except ValueError:
+        return '<invalid>'
 
 
 """Extract domains seen from list of seen urls"""
 def urls_seen_info(uniques_seen):
-    domains_seen = set(map(lambda url: urlparse(url).netloc, map(itemgetter(1), uniques_seen)))
+
+    domains_seen = set(map(url_parse_or_none, map(itemgetter(1), uniques_seen)))
     return {
         'uniques_seen': uniques_seen,
         'unique_domains': domains_seen
@@ -71,7 +110,7 @@ def urls_seen_info(uniques_seen):
     output: ((domain, uid), set(request_id)) """
 def link_requests_by_uid(requests):
     return requests.flatMap(uid_pairs).groupByKey().mapValues(set)\
-        .map(groupByDomain).groupByKey().flatMap(compress_uids)
+        .map(groupByDomain).groupByKey().filter(lambda r: r[0] != 'mozilla.org').flatMap(compress_uids2)
 
 
 def calculate_uid_reach(requests, linked_uids):
@@ -107,7 +146,7 @@ def calculate_uid_reach(requests, linked_uids):
     return uid_reach
 
 
-def run_analysis(sc, input_dir='./logs/', output_dir='./data'):
+def run_analysis(sc, input_dir='./logs/'):
 
     def sanitise_request_obj(req):
         req['found_urls'] = list(req['found_urls'])
@@ -155,7 +194,7 @@ def uid_reach_as_dataframes(uid_reach, sqlContext):
         meta['uid'] = uid
         # extra processing
         meta['non_fp_uniques'] = [elem for elem in meta['uniques_seen'] if not domain in elem[1]]
-        meta['tp_domains'] = set([urlparse(elem[1]).netloc for elem in meta['non_fp_uniques']])
+        meta['tp_domains'] = set([url_parse_or_none(elem[1]) for elem in meta['non_fp_uniques']])
         return meta
 
     def add_id(tup):
@@ -207,7 +246,9 @@ def query_top_uids(sqlContext):
         COUNT(p.key) AS uids, \
         COUNT(CASE WHEN p.source = 'cookie' THEN 1 ELSE NULL END) AS cookies, \
         COUNT(CASE WHEN p.source = 'qs' THEN 1 ELSE NULL END) AS qs, \
-        COUNT(CASE WHEN p.source = 'ps' THEN 1 ELSE NULL END) AS ps \
+        COUNT(CASE WHEN p.source = 'ps' THEN 1 ELSE NULL END) AS ps, \
+        COUNT(CASE WHEN p.source = 'form' THEN 1 ELSE NULL END) AS form, \
+        COUNT(CASE WHEN p.source = 'post-json' THEN 1 ELSE NULL END) AS json \
         FROM uid AS u \
         LEFT JOIN uid_parts AS p ON u.uid_id = p.uid_id AND p.classification = 'uid' \
         GROUP BY u.uid_id \
@@ -242,5 +283,13 @@ def requests_as_dataframes(requests, sqlContext):
 
 
 if __name__ == '__main__':
+    from pyspark.sql import SparkSession
+
     sc = SparkContext()
-    run_analysis(sc)
+    sqlContext = SparkSession.builder.appName("Anti-tracking analysis").getOrCreate()
+
+    requests, uid_reach = run_analysis(sc, input_dir='./logs/')
+    save_analysis_rdds(requests, uid_reach)
+    # uid_tables = uid_reach_as_dataframes(uid_reach, sqlContext)
+    # register_tables(uid_tables)
+    # print(query_top_uids(sqlContext).limit(20).toPandas())
