@@ -26,6 +26,7 @@ def is_safe_token(token):
 # Manual exclusion of common values which are not uids
 not_uids = set(['.doubleclick.net', 'CheckForPermission', 'HttpOnly', 'httponly', 'secure',
                'en,de'])
+common_resolutions = set(["1600", "900", "1440", "1024"])
 
 def is_manual_safe(domain, key, value):
-    return value.strip() in not_uids
+    return value.strip() in not_uids or value.strip() in common_resolutions

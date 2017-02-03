@@ -25,7 +25,7 @@ def prepare_request_dict(req_with_index):
     req, rid = req_with_index
     req['rid'] = rid
     req['tld'] = tldextract.extract(req['host']).registered_domain
-    req['found_urls'] = set(find_third_parties(req))
+    req['found_urls'] = frozenset(find_third_parties(req))
     # for requests without ts, make up something feasible
     if not 'ts' in req:
         req['ts'] = (datetime(year=2016, month=1, day=1) + timedelta(seconds=rid)).timestamp()
@@ -146,15 +146,18 @@ def calculate_uid_reach(requests, linked_uids):
     return uid_reach
 
 
-def run_analysis(sc, input_dir='./logs/'):
+def load_mitm_data(sc, input_dir='./logs'):
+    return sc.textFile(input_dir).flatMap(safe_json_decode).zipWithIndex()\
+        .map(prepare_request_dict)
+
+def run_analysis(sc, input_data):
 
     def sanitise_request_obj(req):
         req['found_urls'] = list(req['found_urls'])
         return req
 
     # load request logs, decode and and an index
-    requests = sc.textFile(input_dir).flatMap(safe_json_decode).zipWithIndex()\
-        .map(prepare_request_dict).map(sanitise_request_obj).cache()
+    requests = input_data.map(sanitise_request_obj).cache()
 
     # find uids and the requests they saw
     linked = link_requests_by_uid(requests).cache()
@@ -172,7 +175,7 @@ def save_analysis_rdds(requests, uid_reach, output_dir='./data'):
 
 
 def get_uid_class(host, source, key, val):
-    if val is None or len(val) <= 4:
+    if val is None or len(val) <= 3:
         return 'short'
     elif is_safe_key(host.encode('utf-8'), key.encode('utf-8')):
         return 'safekey'
@@ -186,7 +189,7 @@ def get_uid_class(host, source, key, val):
 
 """ Takes uid_reach rdd (from run_analysis) and converts it into a dict of spark Dataframes
 """
-def uid_reach_as_dataframes(uid_reach, sqlContext):
+def uid_reach_as_dataframes(uid_reach, sqlContext, visited_domains=set()):
 
     def uid_dict(tup):
         (domain, uid), meta = tup
@@ -195,6 +198,7 @@ def uid_reach_as_dataframes(uid_reach, sqlContext):
         # extra processing
         meta['non_fp_uniques'] = [elem for elem in meta['uniques_seen'] if not domain in elem[1]]
         meta['tp_domains'] = set([url_parse_or_none(elem[1]) for elem in meta['non_fp_uniques']])
+        meta['visited_domains'] = set(filter(lambda d: d in visited_domains, meta['tp_domains']))
         return meta
 
     def add_id(tup):
@@ -210,9 +214,10 @@ def uid_reach_as_dataframes(uid_reach, sqlContext):
             for elem in uid_data[col]:
                 yield col, Row(uid_id=uid_id, source=elem[0], url=elem[1])
         
-        for col in ['tp_domains', 'unique_domains']:
+        for col in ['tp_domains', 'unique_domains', 'visited_domains']:
             for domain in uid_data[col]:
-                yield col, Row(uid_id=uid_id, domain=domain)
+                row = Row(uid_id=uid_id, domain=domain)
+                yield col, row
                 
         for uid_part in uid_data['uid']:
             source, key, value = uid_part
@@ -223,13 +228,13 @@ def uid_reach_as_dataframes(uid_reach, sqlContext):
         yield 'uid', Row(uid_id=uid_id, domain=uid_domain, uid=str(uid_data['uid']),
                          duration=uid_duration, start=datetime.fromtimestamp(uid_data['from_ts']),
                          end=datetime.fromtimestamp(uid_data['to_ts']),
-                        **{k: len(uid_data[k]) for k in ['non_fp_uniques', 'uniques_seen', 'tp_domains', 'unique_domains']})
+                        **{k: len(uid_data[k]) for k in ['non_fp_uniques', 'uniques_seen', 'tp_domains', 'unique_domains', 'visited_domains']})
 
     # index uid entries then split into different Rows
     uid_table_data = uid_reach.map(uid_dict).zipWithIndex().map(add_id)\
         .flatMap(split_uid_tables)
     uid_tables = {k: sqlContext.createDataFrame(uid_table_data.filter(lambda r: r[0] == k).values().cache())
-          for k in ['uid', 'non_fp_uniques', 'uniques_seen', 'tp_domains', 'unique_domains', 'uid_parts']}
+          for k in ['uid', 'non_fp_uniques', 'uniques_seen', 'tp_domains', 'unique_domains', 'uid_parts', 'visited_domains']}
     return uid_tables
 
 
@@ -288,7 +293,7 @@ if __name__ == '__main__':
     sc = SparkContext()
     sqlContext = SparkSession.builder.appName("Anti-tracking analysis").getOrCreate()
 
-    requests, uid_reach = run_analysis(sc, input_dir='./logs/')
+    requests, uid_reach = run_analysis(sc, load_mitm_data(input_dir='./logs/'))
     save_analysis_rdds(requests, uid_reach)
     # uid_tables = uid_reach_as_dataframes(uid_reach, sqlContext)
     # register_tables(uid_tables)

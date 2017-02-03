@@ -55,9 +55,9 @@ def find_third_parties(req):
 
     # find urls in post data
     post_data_sources = [('form', iter_multi_dict(req['urlencoded_form']))]
-    if 'data' in req:
-        post_data_sources.append(('post-json', iterate_json_post_data(req['data'])))
-        post_data_sources.append(('form', iterate_form_post_data(req['data'])))
+    if 'text' in req and req['text'] is not None:
+        post_data_sources.append(('post-json', iterate_json_post_data(req['text'])))
+        post_data_sources.append(('form', iterate_form_post_data(req['text'])))
 
     for source, gen in post_data_sources:
         for k, v in gen:
@@ -126,6 +126,16 @@ def iterate_form_post_data(data):
             continue
     return
 
+
+def iterate_cookie_string(cookiedata):
+    for cookie in cookiedata.split(';'):
+        if '=' in cookie:
+            c_name, c_value = cookie.split('=', 1)
+        else:
+            c_name = ''
+            c_value = cookie
+        yield c_name, c_value
+
 # values longer than this from post data are probably real uploaded data and should be ignored
 LONG_UID_CUTOFF = 500
 
@@ -134,15 +144,10 @@ def iterate_uids(req):
     for cookie in iter_multi_dict(req['req_cookies']):
         yield 'cookie', cookie[0], cookie[1]
 
-    for k, v in iter_multi_dict(req['res_headers']):
-        if k == 'Set-Cookie':
-            for cookie in v.split(';'):
-                if '=' in cookie:
-                    c_name, c_value = cookie.split('=', 1)
-                else:
-                    c_name = ''
-                    c_value = cookie
-                yield 'set-cookie', c_name, c_value
+    # for k, v in iter_multi_dict(req['res_headers']):
+    #     if k == 'Set-Cookie':
+    #         for c_name, c_value in iterate_cookie_string(v):
+    #             yield 'set-cookie', c_name, c_value
 
     url_parts = urlparse(req['url'])
     for part, kv in [('qs', url_parts.query), ('ps', url_parts.params)]:
