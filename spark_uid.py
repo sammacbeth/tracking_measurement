@@ -175,7 +175,7 @@ def save_analysis_rdds(requests, uid_reach, output_dir='./data'):
 
 
 def get_uid_class(host, source, key, val):
-    if val is None or len(val) <= 3:
+    if val is None or len(val) <= 4:
         return 'short'
     elif is_safe_key(host.encode('utf-8'), key.encode('utf-8')):
         return 'safekey'
@@ -202,8 +202,8 @@ def uid_reach_as_dataframes(uid_reach, sqlContext, visited_domains=set()):
         return meta
 
     def add_id(tup):
-        d, id = tup
-        d['id'] = id
+        d, uid = tup
+        d['id'] = uid
         return d
 
     """Splits subfields of uid_data into seperate Rows"""
