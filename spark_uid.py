@@ -177,6 +177,8 @@ def save_analysis_rdds(requests, uid_reach, output_dir='./data'):
 def get_uid_class(host, source, key, val):
     if val is None or len(val) <= 4:
         return 'short'
+    elif val == 'cliqz.com/tracking':
+        return 'cliqz'
     elif is_safe_key(host.encode('utf-8'), key.encode('utf-8')):
         return 'safekey'
     elif is_safe_token(val.encode('utf-8')):
